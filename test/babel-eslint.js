@@ -2,6 +2,7 @@ var assert      = require("assert");
 var babelEslint = require("..");
 var espree      = require("espree");
 var util        = require("util");
+var unpad       = require("../utils/unpad");
 
 // Checks if the source ast implements the target ast. Ignores extra keys on source ast
 function assertImplementsAST(target, source, path) {
@@ -10,7 +11,7 @@ function assertImplementsAST(target, source, path) {
   }
 
   function error(text) {
-    var err = new Error("At " + path.join(".") + ": " + text + ":");
+    var err = new Error(`At ${path.join(".")}: ${text}:`);
     err.depth = path.length + 1;
     throw err;
   }
@@ -18,7 +19,7 @@ function assertImplementsAST(target, source, path) {
   var typeA = target === null ? "null" : typeof target;
   var typeB = source === null ? "null" : typeof source;
   if (typeA !== typeB) {
-    error("have different types (" + typeA + " !== " + typeB + ") " + "(" + target + " !== " + source + ")");
+    error(`have different types (${typeA} !== ${typeB}) (${target} !== ${source})`);
   } else if (typeA === "object") {
     var keysTarget = Object.keys(target);
     for (var i in keysTarget) {
@@ -28,420 +29,472 @@ function assertImplementsAST(target, source, path) {
       path.pop();
     }
   } else if (target !== source) {
-    error("are different (" + JSON.stringify(target) + " !== " + JSON.stringify(source) + ")");
+    error(`are different (${JSON.stringify(target)} !== ${JSON.stringify(source)})`);
   }
+}
+
+function lookup(obj, keypath, backwardsDepth) {
+  if (!keypath) { return obj; }
+
+  return keypath.split(".").slice(0, -1 * backwardsDepth)
+  .reduce((base, segment) => { return base && base[segment], obj; });
 }
 
 function parseAndAssertSame(code) {
   var esAST = espree.parse(code, {
     ecmaFeatures: {
-      arrowFunctions: true,
-      binaryLiterals: true,
-      blockBindings: true,
-      classes: true,
-      defaultParams: true,
-      destructuring: true,
-      forOf: true,
-      generators: true,
-      modules: true,
-      objectLiteralComputedProperties: true,
-      objectLiteralDuplicateProperties: true,
-      objectLiteralShorthandMethods: true,
-      objectLiteralShorthandProperties: true,
-      octalLiterals: true,
-      regexUFlag: true,
-      regexYFlag: true,
-      restParams: true,
-      spread: true,
-      superInFunctions: true,
-      templateStrings: true,
-      unicodeCodePointEscapes: true,
-      globalReturn: true,
+        // enable JSX parsing
       jsx: true,
-      experimentalObjectRestSpread: true,
+        // enable return in global scope
+      globalReturn: true,
+        // enable implied strict mode (if ecmaVersion >= 5)
+      impliedStrict: true,
+        // allow experimental object rest/spread
+      experimentalObjectRestSpread: true
     },
     tokens: true,
     loc: true,
     range: true,
     comment: true,
-    attachComment: true
+    attachComment: true,
+    ecmaVersion: 8,
+    sourceType: "module"
   });
   var babylonAST = babelEslint.parse(code);
   try {
     assertImplementsAST(esAST, babylonAST);
-  } catch(err) {
-    err.message +=
-      "\nespree:\n" +
-      util.inspect(esAST, {depth: err.depth, colors: true}) +
-      "\nbabel-eslint:\n" +
-      util.inspect(babylonAST, {depth: err.depth, colors: true});
+  } catch (err) {
+    var traversal = err.message.slice(3, err.message.indexOf(":"));
+    if (esAST.tokens) {
+      delete esAST.tokens;
+    }
+    if (babylonAST.tokens) {
+      delete babylonAST.tokens;
+    }
+    err.message += unpad(`
+      espree:
+      ${util.inspect(lookup(esAST, traversal, 2), { depth: err.depth, colors: true })}
+      babel-eslint:
+      ${util.inspect(lookup(babylonAST, traversal, 2), { depth: err.depth, colors: true })}
+    `);
     throw err;
   }
   // assert.equal(esAST, babylonAST);
 }
 
-describe("acorn-to-esprima", function () {
-  describe("templates", function () {
-    it("empty template string", function () {
+describe("babylon-to-esprima", () => {
+  describe("templates", () => {
+    it("empty template string", () => {
       parseAndAssertSame("``");
     });
 
-    it("template string", function () {
+    it("template string", () => {
       parseAndAssertSame("`test`");
     });
 
-    it("template string using $", function () {
+    it("template string using $", () => {
       parseAndAssertSame("`$`");
     });
 
-    it("template string with expression", function () {
+    it("template string with expression", () => {
       parseAndAssertSame("`${a}`");
     });
 
-    it("template string with multiple expressions", function () {
+    it("template string with multiple expressions", () => {
       parseAndAssertSame("`${a}${b}${c}`");
     });
 
-    it("template string with expression and strings", function () {
+    it("template string with expression and strings", () => {
       parseAndAssertSame("`a${a}a`");
     });
 
-    it("template string with binary expression", function () {
+    it("template string with binary expression", () => {
       parseAndAssertSame("`a${a + b}a`");
     });
 
-    it("tagged template", function () {
+    it("tagged template", () => {
       parseAndAssertSame("jsx`<Button>Click</Button>`");
     });
 
-    it("tagged template with expression", function () {
+    it("tagged template with expression", () => {
       parseAndAssertSame("jsx`<Button>Hi ${name}</Button>`");
     });
 
-    it("tagged template with new operator", function () {
+    it("tagged template with new operator", () => {
       parseAndAssertSame("new raw`42`");
     });
 
-    it("template with nested function/object", function () {
+    it("template with nested function/object", () => {
       parseAndAssertSame("`outer${{x: {y: 10}}}bar${`nested${function(){return 1;}}endnest`}end`");
     });
 
-    it("template with braces inside and outside of template string #96", function () {
+    it("template with braces inside and outside of template string #96", () => {
       parseAndAssertSame("if (a) { var target = `{}a:${webpackPort}{}}}}`; } else { app.use(); }");
     });
 
-    it("template also with braces #96", function () {
+    it("template also with braces #96", () => {
       parseAndAssertSame(
-        "export default function f1() {" +
-          "function f2(foo) {" +
-            "const bar = 3;" +
-            "return `${foo} ${bar}`;" +
-          "}" +
-          "return f2;" +
-        "}"
+        unpad(`
+          export default function f1() {
+            function f2(foo) {
+              const bar = 3;
+              return \`\${foo} \${bar}\`;
+            }
+            return f2;
+          }
+        `)
       );
     });
 
-    it("template with destructuring #31", function () {
-      parseAndAssertSame([
-        "module.exports = {",
-          "render() {",
-            "var {name} = this.props;",
-            "return Math.max(null, `Name: ${name}, Name: ${name}`);",
-          "}",
-        "};"
-      ].join("\n"));
+    it("template with destructuring #31", () => {
+      parseAndAssertSame(
+        unpad(`
+          module.exports = {
+            render() {
+              var {name} = this.props;
+              return Math.max(null, \`Name: \${name}, Name: \${name}\`);
+            }
+          };
+        `)
+      );
     });
   });
 
-  it("simple expression", function () {
+  it("simple expression", () => {
     parseAndAssertSame("a = 1");
   });
 
-  it("class declaration", function () {
+  it("class declaration", () => {
     parseAndAssertSame("class Foo {}");
   });
 
-  it("class expression", function () {
+  it("class expression", () => {
     parseAndAssertSame("var a = class Foo {}");
   });
 
-  it("jsx expression", function () {
+  it("jsx expression", () => {
     parseAndAssertSame("<App />");
   });
 
-  it("jsx expression with 'this' as identifier", function () {
+  it("jsx expression with 'this' as identifier", () => {
     parseAndAssertSame("<this />");
   });
 
-  it("jsx expression with a dynamic attribute", function () {
+  it("jsx expression with a dynamic attribute", () => {
     parseAndAssertSame("<App foo={bar} />");
   });
 
-  it("jsx expression with a member expression as identifier", function () {
+  it("jsx expression with a member expression as identifier", () => {
     parseAndAssertSame("<foo.bar />");
   });
 
-  it("jsx expression with spread", function () {
+  it("jsx expression with spread", () => {
     parseAndAssertSame("var myDivElement = <div {...this.props} />;");
   });
 
-  it("empty jsx text", function () {
+  it("empty jsx text", () => {
     parseAndAssertSame("<a></a>");
   });
 
-  it("jsx text with content", function () {
+  it("jsx text with content", () => {
     parseAndAssertSame("<a>Hello, world!</a>");
   });
 
-  it("nested jsx", function () {
+  it("nested jsx", () => {
     parseAndAssertSame("<div>\n<h1>Wat</h1>\n</div>");
   });
 
-  it("default import", function () {
-    parseAndAssertSame('import foo from "foo";');
+  it("default import", () => {
+    parseAndAssertSame("import foo from \"foo\";");
   });
 
-  it("import specifier", function () {
-    parseAndAssertSame('import { foo } from "foo";');
+  it("import specifier", () => {
+    parseAndAssertSame("import { foo } from \"foo\";");
   });
 
-  it("import specifier with name", function () {
-    parseAndAssertSame('import { foo as bar } from "foo";');
+  it("import specifier with name", () => {
+    parseAndAssertSame("import { foo as bar } from \"foo\";");
   });
 
-  it("import bare", function () {
-    parseAndAssertSame('import "foo";');
+  it("import bare", () => {
+    parseAndAssertSame("import \"foo\";");
   });
 
-  it("export default class declaration", function () {
+  it("export default class declaration", () => {
     parseAndAssertSame("export default class Foo {}");
   });
 
-  it("export default class expression", function () {
+  it("export default class expression", () => {
     parseAndAssertSame("export default class {}");
   });
 
-  it("export default function declaration", function () {
+  it("export default function declaration", () => {
     parseAndAssertSame("export default function Foo() {}");
   });
 
-  it("export default function expression", function () {
+  it("export default function expression", () => {
     parseAndAssertSame("export default function () {}");
   });
 
-  it("export all", function () {
-    parseAndAssertSame('export * from "foo";');
+  it("export all", () => {
+    parseAndAssertSame("export * from \"foo\";");
   });
 
-  it("export named", function () {
+  it("export named", () => {
     parseAndAssertSame("export { foo };");
   });
 
-  it("export named alias", function () {
+  it("export named alias", () => {
     parseAndAssertSame("export { foo as bar };");
   });
 
-  it.skip("empty program with line comment", function () {
+  it.skip("empty program with line comment", () => {
     parseAndAssertSame("// single comment");
   });
 
-  it.skip("empty program with block comment", function () {
+  it.skip("empty program with block comment", () => {
     parseAndAssertSame("  /* multiline\n * comment\n*/");
   });
 
-  it("line comments", function () {
-    parseAndAssertSame([
-      "  // single comment",
-      "var foo = 15; // comment next to statement",
-      "// second comment after statement"
-    ].join("\n"));
+  it("line comments", () => {
+    parseAndAssertSame(
+      unpad(`
+        // single comment
+        var foo = 15; // comment next to statement
+        // second comment after statement
+      `)
+    );
   });
 
-  it("block comments", function () {
-    parseAndAssertSame([
-      "  /* single comment */ ",
-      "var foo = 15; /* comment next to statement */",
-      "/*",
-      " * multiline",
-      " * comment",
-      " */"
-    ].join("\n"));
+  it("block comments", () => {
+    parseAndAssertSame(
+      unpad(`
+        /* single comment */
+        var foo = 15; /* comment next to statement */
+        /*
+         * multiline
+         * comment
+         */
+       `)
+    );
   });
 
-  it("block comments #124", function () {
-    parseAndAssertSame([
-      "React.createClass({",
-        "render() {",
-           "// return (",
-           "//   <div />",
-           "// ); // <-- this is the line that is reported",
-        "}",
-      "});"
-    ].join("\n"));
+  it("block comments #124", () => {
+    parseAndAssertSame(
+      unpad(`
+        React.createClass({
+          render() {
+            // return (
+            //   <div />
+            // ); // <-- this is the line that is reported
+          }
+        });
+      `)
+    );
   });
 
-  it("null", function () {
+  it("null", () => {
     parseAndAssertSame("null");
   });
 
-  it("boolean", function () {
+  it("boolean", () => {
     parseAndAssertSame("if (true) {} else if (false) {}");
   });
 
-  it("regexp", function () {
+  it("regexp", () => {
     parseAndAssertSame("/affix-top|affix-bottom|affix|[a-z]/");
   });
 
-  it("regexp in a template string", function () {
+  it("regexp in a template string", () => {
     parseAndAssertSame("`${/\\d/.exec(\"1\")[0]}`");
   });
 
-  it("first line is empty", function () {
+  it("first line is empty", () => {
     parseAndAssertSame("\nimport Immutable from \"immutable\";");
   });
 
-  it("empty", function () {
+  it("empty", () => {
     parseAndAssertSame("");
   });
 
-  it("jsdoc", function () {
-    parseAndAssertSame([
-      "/**",
-       "* @param {object} options",
-       "* @return {number}",
-       "*/",
-      "const test = function({ a, b, c }) {",
-        "return a + b + c;",
-      "};",
-      "module.exports = test;"
-    ].join("\n"));
-  })
-
-  it("empty block with comment", function () {
-    parseAndAssertSame([
-      "function a () {",
-        "try {",
-          "b();",
-        "} catch (e) {",
-          "// asdf",
-        "}",
-      "}"
-    ].join("\n"));
+  it("jsdoc", () => {
+    parseAndAssertSame(
+      unpad(`
+        /**
+        * @param {object} options
+        * @return {number}
+        */
+        const test = function({ a, b, c }) {
+          return a + b + c;
+        };
+        module.exports = test;
+      `)
+    );
   });
 
-  describe("babel 6 tests", function () {
-    it("MethodDefinition", function () {
-      parseAndAssertSame([
-        "export default class A {",
-          "a() {}",
-        "}"
-      ].join("\n"));
+  it("empty block with comment", () => {
+    parseAndAssertSame(
+      unpad(`
+        function a () {
+          try {
+            b();
+          } catch (e) {
+            // asdf
+          }
+        }
+      `)
+    );
+  });
+
+  describe("babel 6 tests", () => {
+    it("MethodDefinition", () => {
+      parseAndAssertSame(
+        unpad(`
+          export default class A {
+            a() {}
+          }
+        `)
+      );
     });
 
-    it("MethodDefinition 2", function () {
-      parseAndAssertSame([
-        "export default class Bar { get bar() { return 42; }}"
-      ].join("\n"));
+    it("MethodDefinition 2", () => {
+      parseAndAssertSame("export default class Bar { get bar() { return 42; }}");
     });
 
-    it("ClassMethod", function () {
-      parseAndAssertSame([
-        "class A {",
-          "constructor() {",
-          "}",
-        "}"
-      ].join("\n"));
+    it("ClassMethod", () => {
+      parseAndAssertSame(
+        unpad(`
+          class A {
+            constructor() {
+            }
+          }
+        `)
+      );
     });
 
-    it("ClassMethod multiple params", function () {
-      parseAndAssertSame([
-        "class A {",
-          "constructor(a, b, c) {",
-          "}",
-        "}"
-      ].join("\n"));
+    it("ClassMethod multiple params", () => {
+      parseAndAssertSame(
+        unpad(`
+          class A {
+            constructor(a, b, c) {
+            }
+          }
+        `)
+      );
     });
 
-    it("ClassMethod multiline", function () {
-      parseAndAssertSame([
-        "class A {",
-        "  constructor (",
-        "    a,",
-        "    b,",
-        "    c",
-        "  )",
-        "{",
-        "",
-        "  }",
-        "}"
-      ].join("\n"));
+    it("ClassMethod multiline", () => {
+      parseAndAssertSame(
+        unpad(`
+          class A {
+            constructor (
+              a,
+              b,
+              c
+            )
+
+            {
+
+            }
+          }
+        `)
+      );
     });
 
-    it("ClassMethod oneline", function () {
+    it("ClassMethod oneline", () => {
       parseAndAssertSame("class A { constructor(a, b, c) {} }");
     });
 
-    it("ObjectMethod", function () {
-      parseAndAssertSame([
-        "var a = {",
-          "b(c) {",
-          "}",
-        "}"
-      ].join("\n"));
+    it("ObjectMethod", () => {
+      parseAndAssertSame(
+        unpad(`
+          var a = {
+            b(c) {
+            }
+          }
+        `)
+      );
     });
 
-    it("do not allow import export everywhere", function() {
-      assert.throws(function () {
+    it("do not allow import export everywhere", () => {
+      assert.throws(() => {
         parseAndAssertSame("function F() { import a from \"a\"; }");
-      }, /Illegal import declaration/)
+      }, /SyntaxError: 'import' and 'export' may only appear at the top level/);
     });
 
-    it("return outside function", function () {
+    it("return outside function", () => {
       parseAndAssertSame("return;");
     });
 
-    it("super outside method", function () {
+    it("super outside method", () => {
       parseAndAssertSame("function F() { super(); }");
     });
 
-    it("StringLiteral", function () {
-      parseAndAssertSame('');
+    it("StringLiteral", () => {
+      parseAndAssertSame("");
       parseAndAssertSame("");
       parseAndAssertSame("a");
     });
 
-    it("getters and setters", function () {
+    it("getters and setters", () => {
       parseAndAssertSame("class A { get x ( ) { ; } }");
-      parseAndAssertSame([
-        "class A {",
-          "get x(",
-          ")",
-          "{",
-            ";",
-          "}",
-        "}"
-      ].join("\n"));
+      parseAndAssertSame(
+        unpad(`
+          class A {
+            get x(
+            )
+            {
+              ;
+            }
+          }
+        `)
+      );
       parseAndAssertSame("class A { set x (a) { ; } }");
-      parseAndAssertSame([
-        "class A {",
-          "set x(a",
-          ")",
-          "{",
-            ";",
-          "}",
-        "}"
-      ].join("\n"));
-      parseAndAssertSame([
-        "var B = {",
-            "get x () {",
-                "return this.ecks;",
-            "},",
-            "set x (ecks) {",
-                "this.ecks = ecks;",
-            "}",
-        "};"
-      ].join("\n"));
+      parseAndAssertSame(
+        unpad(`
+          class A {
+            set x(a
+            )
+            {
+              ;
+            }
+          }
+        `)
+      );
+      parseAndAssertSame(
+        unpad(`
+          var B = {
+            get x () {
+              return this.ecks;
+            },
+            set x (ecks) {
+              this.ecks = ecks;
+            }
+          };
+        `)
+      );
+    });
+
+    it("RestOperator", () => {
+      parseAndAssertSame("var { a, ...b } = c");
+      parseAndAssertSame("var [ a, ...b ] = c");
+      parseAndAssertSame("var a = function (...b) {}");
+    });
+
+    it("SpreadOperator", () => {
+      parseAndAssertSame("var a = { b, ...c }");
+      parseAndAssertSame("var a = [ a, ...b ]");
+      parseAndAssertSame("var a = sum(...b)");
+    });
+
+    it("Async/Await", () => {
+      parseAndAssertSame(
+        unpad(`
+          async function a() {
+            await 1;
+          }
+        `)
+      );
     });
   });
 });

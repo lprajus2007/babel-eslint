@@ -1,15 +1,15 @@
-var acornToEsprima = require("acorn-to-esprima");
-var assign         = require("lodash.assign");
-var pick           = require("lodash.pick");
-var Module         = require("module");
-var path           = require("path");
-var parse          = require("babylon").parse;
-var t              = require("babel-types");
-var tt             = require("babylon").tokTypes;
-var traverse       = require("babel-traverse").default;
+var babylonToEspree = require("./babylon-to-espree");
+var pick            = require("lodash.pickby");
+var Module          = require("module");
+var path            = require("path");
+var parse           = require("babylon").parse;
+var t               = require("babel-types");
+var tt              = require("babylon").tokTypes;
+var traverse        = require("babel-traverse").default;
+var codeFrame       = require("babel-code-frame");
 
-var estraverse;
 var hasPatched = false;
+var eslintOptions = {};
 
 function createModule(filename) {
   var mod = new Module(filename);
@@ -37,36 +37,30 @@ function monkeypatch() {
 
   // get modules relative to what eslint will load
   var eslintMod = createModule(eslintLoc);
-  var escopeLoc = Module._resolveFilename("escope", eslintMod);
-  var escopeMod = createModule(escopeLoc);
-
-  // npm 3: monkeypatch estraverse if it's in escope
-  var estraverseRelative = escopeMod;
-  try {
-    var esrecurseLoc = Module._resolveFilename("esrecurse", eslintMod);
-    estraverseRelative = createModule(esrecurseLoc);
-  } catch (err) {}
-
-  // monkeypatch estraverse
-  estraverse = estraverseRelative.require("estraverse");
-  assign(estraverse.VisitorKeys, t.VISITOR_KEYS);
-
-  // monkeypatch estraverse-fb
-  var estraverseFb = eslintMod.require("estraverse-fb");
-  assign(estraverseFb.VisitorKeys, t.VISITOR_KEYS);
-
+  // contains all the instances of estraverse so we can modify them if necessary
+  var estraverses = [];
   // ESLint v1.9.0 uses estraverse directly to work around https://github.com/npm/npm/issues/9663
   var estraverseOfEslint = eslintMod.require("estraverse");
-  if (estraverseOfEslint !== estraverseFb) {
-    assign(estraverseOfEslint.VisitorKeys, t.VISITOR_KEYS);
-  }
+  estraverses.push(estraverseOfEslint);
+  Object.assign(estraverseOfEslint.VisitorKeys, t.VISITOR_KEYS);
+
+  estraverses.forEach((estraverse) => {
+    estraverse.VisitorKeys.MethodDefinition.push("decorators");
+    estraverse.VisitorKeys.Property.push("decorators");
+  });
 
   // monkeypatch escope
+  var escopeLoc = Module._resolveFilename("escope", eslintMod);
+  var escopeMod = createModule(escopeLoc);
   var escope  = require(escopeLoc);
   var analyze = escope.analyze;
   escope.analyze = function (ast, opts) {
-    opts.ecmaVersion = 6;
-    opts.sourceType = "module";
+    opts.ecmaVersion = eslintOptions.ecmaVersion;
+    opts.sourceType = eslintOptions.sourceType;
+    if (eslintOptions.globalReturn !== undefined) {
+      opts.nodejsScope = eslintOptions.globalReturn;
+    }
+
     var results = analyze.call(this, ast, opts);
     return results;
   };
@@ -80,24 +74,8 @@ function monkeypatch() {
   }
   var referencerMod = createModule(referencerLoc);
   var referencer = require(referencerLoc);
-  if (typeof referencer === 'object' && referencer.default) {
+  if (referencer.__esModule) {
     referencer = referencer.default;
-  }
-
-  // monkeypatch escope/pattern-visitor
-  var patternVisitorLoc;
-  var patternVisitorMod;
-  var patternVisitor;
-  try {
-    patternVisitorLoc = Module._resolveFilename("./pattern-visitor", escopeMod);
-    patternVisitorMod = createModule(patternVisitorLoc);
-    patternVisitor = require(patternVisitorLoc);
-    if (typeof patternVisitor === 'object' && patternVisitor.default) {
-      patternVisitor = patternVisitor.default;
-    }
-  } catch (err) {
-    // When eslint uses old escope, we cannot find pattern visitor.
-    // Fallback to the old way.
   }
 
   // reference Definition
@@ -122,7 +100,7 @@ function monkeypatch() {
   }
 
   // iterate through part of t.VISITOR_KEYS
-  var visitorKeysMap = pick(t.VISITOR_KEYS, function(k) {
+  var visitorKeysMap = pick(t.VISITOR_KEYS, (k) => {
     return t.FLIPPED_ALIAS_KEYS.Flow.concat([
       "ArrayPattern",
       "ClassDeclaration",
@@ -246,7 +224,8 @@ function monkeypatch() {
       this.close(node);
     }
   };
-    // visit decorators that are in: Property / MethodDefinition
+
+  // visit decorators that are in: Property / MethodDefinition
   var visitProperty = referencer.prototype.visitProperty;
   referencer.prototype.visitProperty = function(node) {
     if (node.value && node.value.type === "TypeCastExpression") {
@@ -254,6 +233,14 @@ function monkeypatch() {
     }
     visitDecorators.call(this, node);
     visitProperty.call(this, node);
+  };
+
+  // visit ClassProperty as a Property.
+  referencer.prototype.ClassProperty = function(node) {
+    if (node.typeAnnotation) {
+      visitTypeAnnotation.call(this, node.typeAnnotation);
+    }
+    this.visitProperty(node);
   };
 
   // visit flow type in FunctionDeclaration, FunctionExpression, ArrowFunctionExpression
@@ -279,17 +266,22 @@ function monkeypatch() {
         }
       }
     }
+    // set ArrayPattern/ObjectPattern visitor keys back to their original. otherwise
+    // escope will traverse into them and include the identifiers within as declarations
+    estraverses.forEach((estraverse) => {
+      estraverse.VisitorKeys.ObjectPattern = ["properties"];
+      estraverse.VisitorKeys.ArrayPattern = ["elements"];
+    });
     visitFunction.call(this, node);
+    // set them back to normal...
+    estraverses.forEach((estraverse) => {
+      estraverse.VisitorKeys.ObjectPattern = t.VISITOR_KEYS.ObjectPattern;
+      estraverse.VisitorKeys.ArrayPattern = t.VISITOR_KEYS.ArrayPattern;
+    });
     if (typeParamScope) {
       this.close(node);
     }
   };
-
-  if (patternVisitor) {
-    patternVisitor.prototype.SpreadProperty = function (node) {
-      this.visit(node.argument);
-    };
-  }
 
   // visit flow type in VariableDeclaration
   var variableDeclaration = referencer.prototype.VariableDeclaration;
@@ -300,18 +292,6 @@ function monkeypatch() {
         var typeAnnotation = id.typeAnnotation;
         if (typeAnnotation) {
           checkIdentifierOrVisit.call(this, typeAnnotation);
-        }
-        if (id.type === "ObjectPattern") {
-          // check if object destructuring has a spread
-          var hasSpread = id.properties.filter(function(p) {
-            return p._babelType === "SpreadProperty" || p._babelType === "RestProperty";
-          });
-          // visit properties if so
-          if (hasSpread.length > 0) {
-            for (var j = 0; j < id.properties.length; j++) {
-              this.visit(id.properties[j]);
-            }
-          }
         }
       }
     }
@@ -363,7 +343,17 @@ function monkeypatch() {
   };
 }
 
-exports.parse = function (code) {
+exports.parse = function (code, options) {
+  options = options || {};
+  eslintOptions.ecmaVersion = options.ecmaVersion = options.ecmaVersion || 6;
+  eslintOptions.sourceType = options.sourceType = options.sourceType || "module";
+  eslintOptions.allowImportExportEverywhere = options.allowImportExportEverywhere = options.allowImportExportEverywhere || false;
+  if (options.sourceType === "module") {
+    eslintOptions.globalReturn = false;
+  } else {
+    delete eslintOptions.globalReturn;
+  }
+
   try {
     monkeypatch();
   } catch (err) {
@@ -371,31 +361,31 @@ exports.parse = function (code) {
     process.exit(1);
   }
 
-  return exports.parseNoPatch(code);
-}
+  return exports.parseNoPatch(code, options);
+};
 
-exports.parseNoPatch = function (code) {
+exports.parseNoPatch = function (code, options) {
   var opts = {
-    sourceType: "module",
-    strictMode: true,
-    allowImportExportEverywhere: false, // consistent with espree
+    sourceType: options.sourceType,
+    allowImportExportEverywhere: options.allowImportExportEverywhere, // consistent with espree
     allowReturnOutsideFunction: true,
     allowSuperOutsideMethod: true,
     plugins: [
-        "flow",
-        "jsx",
-        "asyncFunctions",
-        "asyncGenerators",
-        "classConstructorCall",
-        "classProperties",
-        "decorators",
-        "doExpressions",
-        "exponentiationOperator",
-        "exportExtensions",
-        "functionBind",
-        "functionSent",
-        "objectRestSpread",
-        "trailingFunctionCommas"
+      "flow",
+      "jsx",
+      "asyncFunctions",
+      "asyncGenerators",
+      "classConstructorCall",
+      "classProperties",
+      "decorators",
+      "doExpressions",
+      "exponentiationOperator",
+      "exportExtensions",
+      "functionBind",
+      "functionSent",
+      "objectRestSpread",
+      "trailingFunctionCommas",
+      "dynamicImport"
     ]
   };
 
@@ -405,10 +395,13 @@ exports.parseNoPatch = function (code) {
   } catch (err) {
     if (err instanceof SyntaxError) {
       err.lineNumber = err.loc.line;
-      err.column = err.loc.column;
+      err.column = err.loc.column + 1;
 
       // remove trailing "(LINE:COLUMN)" acorn message and add in esprima syntax error message start
-      err.message = "Line " + err.lineNumber + ": " + err.message.replace(/ \((\d+):(\d+)\)$/, "");
+      err.message = "Line " + err.lineNumber + ": " + err.message.replace(/ \((\d+):(\d+)\)$/, "") +
+      // add codeframe
+      "\n\n" +
+      codeFrame(code, err.lineNumber, err.column, { highlightCode: true });
     }
 
     throw err;
@@ -420,27 +413,27 @@ exports.parseNoPatch = function (code) {
   ast.tokens.pop();
 
   // convert tokens
-  ast.tokens = acornToEsprima.toTokens(ast.tokens, tt, code);
+  ast.tokens = babylonToEspree.toTokens(ast.tokens, tt, code);
 
   // add comments
-  acornToEsprima.convertComments(ast.comments);
+  babylonToEspree.convertComments(ast.comments);
 
   // transform esprima and acorn divergent nodes
-  acornToEsprima.toAST(ast, traverse, code);
+  babylonToEspree.toAST(ast, traverse, code);
 
   // ast.program.tokens = ast.tokens;
   // ast.program.comments = ast.comments;
   // ast = ast.program;
 
   // remove File
-  ast.type = 'Program';
+  ast.type = "Program";
   ast.sourceType = ast.program.sourceType;
   ast.directives = ast.program.directives;
   ast.body = ast.program.body;
   delete ast.program;
   delete ast._paths;
 
-  acornToEsprima.attachComments(ast, ast.comments, ast.tokens);
+  babylonToEspree.attachComments(ast, ast.comments, ast.tokens);
 
   return ast;
-}
+};

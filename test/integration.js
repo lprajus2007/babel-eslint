@@ -1,5 +1,4 @@
 var assert = require("assert");
-var assign = require("lodash.assign");
 var eslint = require("eslint");
 var fs = require("fs");
 var path = require("path");
@@ -13,6 +12,9 @@ var errorLevel = 2;
 
 var baseEslintOpts = {
   parser: require.resolve(".."),
+  parserOptions: {
+    sourceType: "script"
+  }
 };
 
 /**
@@ -22,7 +24,7 @@ var baseEslintOpts = {
  * @param function done
  */
 function lint (opts, done) {
-  readFixture(opts.fixture, function (err, src) {
+  readFixture(opts.fixture, (err, src) => {
     if (err) return done(err);
     done(null, eslint.linter.verify(src, opts.eslint));
   });
@@ -44,7 +46,7 @@ function readFixture (id, done) {
 }
 // readFixture
 
-describe("Rules:", function () {
+describe("Rules:", () => {
   describe("`strict`", strictSuite);
 });
 // describe
@@ -52,20 +54,19 @@ describe("Rules:", function () {
 function strictSuite () {
   var ruleId = "strict";
 
-  describe("when set to 'never'", function () {
-    var eslintOpts = assign({}, baseEslintOpts, {
+  describe("when set to 'never'", () => {
+    var eslintOpts = Object.assign({}, baseEslintOpts, {
       rules: {},
     });
     eslintOpts.rules[ruleId] = [errorLevel, "never"];
 
-    ["global-with", "function-with"].forEach(function (fixture) {
-      it(
-        "should error on " + fixture.match(/^[^-]+/)[0] + " directive",
-        function (done) {
+    ["global-with", "function-with"].forEach((fixture) => {
+      it(`should error on ${fixture.match(/^[^-]+/)[0]} directive`,
+        (done) => {
           lint({
             fixture: ["strict", fixture],
             eslint: eslintOpts,
-          }, function (err, report) {
+          }, (err, report) => {
             if (err) return done(err);
             assert(report[0].ruleId === ruleId);
             done();
@@ -77,17 +78,17 @@ function strictSuite () {
   });
   // describe
 
-  describe("when set to 'global'", function () {
-    var eslintOpts = assign({}, baseEslintOpts, {
+  describe("when set to 'global'", () => {
+    var eslintOpts = Object.assign({}, baseEslintOpts, {
       rules: {}
     });
     eslintOpts.rules[ruleId] = [errorLevel, "global"];
 
-    it("shouldn't error on single global directive", function (done) {
+    it("shouldn't error on single global directive", (done) => {
       lint({
         fixture: ["strict", "global-with"],
         eslint: eslintOpts,
-      }, function (err, report) {
+      }, (err, report) => {
         if (err) return done(err);
         assert(!report.length);
         done();
@@ -95,13 +96,13 @@ function strictSuite () {
     });
     // it
 
-    it("should error twice on global directive: no and function directive: yes", function (done) {
+    it("should error twice on global directive: no and function directive: yes", (done) => {
       lint({
         fixture: ["strict", "function-with"],
         eslint: eslintOpts,
-      }, function (err, report) {
+      }, (err, report) => {
         if (err) return done(err);
-        [0, 1].forEach(function (i) {
+        [0, 1].forEach((i) => {
           assert(report[i].ruleId === ruleId);
         });
         done();
@@ -109,11 +110,11 @@ function strictSuite () {
     });
     // it
 
-    it("should error on function directive", function (done) {
+    it("should error on function directive", (done) => {
       lint({
         fixture: ["strict", "global-with-function-with"],
         eslint: eslintOpts,
-      }, function (err, report) {
+      }, (err, report) => {
         if (err) return done(err);
         assert(report[0].ruleId === ruleId);
 
@@ -127,11 +128,11 @@ function strictSuite () {
     });
     // it
 
-    it("should error on no directive", function (done) {
+    it("should error on no directive", (done) => {
       lint({
         fixture: ["strict", "none"],
         eslint: eslintOpts,
-      }, function (err, report) {
+      }, (err, report) => {
         if (err) return done(err);
         assert(report[0].ruleId === ruleId);
         done();
@@ -141,17 +142,17 @@ function strictSuite () {
   });
   // describe
 
-  describe("when set to 'function'", function () {
-    var eslintOpts = assign({}, baseEslintOpts, {
+  describe("when set to 'function'", () => {
+    var eslintOpts = Object.assign({}, baseEslintOpts, {
       rules: {}
     });
     eslintOpts.rules[ruleId] = [errorLevel, "function"];
 
-    it("shouldn't error on single function directive", function (done) {
+    it("shouldn't error on single function directive", (done) => {
       lint({
         fixture: ["strict", "function-with"],
         eslint: eslintOpts,
-      }, function (err, report) {
+      }, (err, report) => {
         if (err) return done(err);
         assert(!report.length);
         done();
@@ -159,13 +160,13 @@ function strictSuite () {
     });
     // it
 
-    it("should error twice on function directive: no and global directive: yes", function (done) {
+    it("should error twice on function directive: no and global directive: yes", (done) => {
       lint({
         fixture: ["strict", "global-with-function-without"],
         eslint: eslintOpts,
-      }, function (err, report) {
+      }, (err, report) => {
         if (err) return done(err);
-        [0, 1].forEach(function (i) {
+        [0, 1].forEach((i) => {
           assert(report[i].ruleId === ruleId);
         });
         done();
@@ -173,11 +174,11 @@ function strictSuite () {
     });
     // it
 
-    it("should error on only global directive", function (done) {
+    it("should error on only global directive", (done) => {
       lint({
         fixture: ["strict", "global-with"],
         eslint: eslintOpts,
-      }, function (err, report) {
+      }, (err, report) => {
         if (err) return done(err);
         assert(report[0].ruleId === ruleId);
         done();
@@ -185,11 +186,11 @@ function strictSuite () {
     });
     // it
 
-    it("should error on extraneous global directive", function (done) {
+    it("should error on extraneous global directive", (done) => {
       lint({
         fixture: ["strict", "global-with-function-with"],
         eslint: eslintOpts,
-      }, function (err, report) {
+      }, (err, report) => {
         if (err) return done(err);
         assert(report[0].ruleId === ruleId);
         assert(report[0].nodeType.indexOf("Function") === -1);
